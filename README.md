@@ -4,7 +4,7 @@ An IOTA transaction spammer.
 
 Modes:
 * Spam using `getTransactionsToApprove`.
-* Spam using tips from a buffer filled by a transaction ZQM stream.
+* Spam using tips from a buffer filled by a transaction ZMQ stream.
 
 Flags:
 * -instances, spammer instance counts; default: 5
