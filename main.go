@@ -11,6 +11,7 @@ import (
 	"github.com/iotaledger/iota.go/checksum"
 	"github.com/iotaledger/iota.go/consts"
 	"github.com/iotaledger/iota.go/pow"
+	"github.com/iotaledger/iota.go/transaction"
 	"github.com/iotaledger/iota.go/trinary"
 	"github.com/pebbe/zmq4"
 	"strings"
@@ -120,6 +121,7 @@ func zmqSpammer() {
 	var rMu sync.Mutex
 	r := ring.New(*zmqBuf)
 
+	
 	go func() {
 		for {
 			msg, err := socket.Recv(0)
@@ -145,7 +147,7 @@ func zmqSpammer() {
 				ready = false
 				return
 			}
-			filled ++
+			filled++
 		})
 		if ready {
 			break
@@ -174,6 +176,14 @@ func zmqSpammer() {
 		//fmt.Println(branch)
 		powedBndl, err := iotaAPI.AttachToTangle(trunk, branch, uint64(*mwm), bndl)
 		must(err)
+
+		tx, err := transaction.AsTransactionObject(powedBndl[0])
+		must(err)
+		hash := transaction.TransactionHash(tx)
+		rMu.Lock()
+		r.Value = hash
+		r = r.Next()
+		rMu.Unlock()
 
 		_, err = iotaAPI.BroadcastTransactions(powedBndl...)
 		must(err)
