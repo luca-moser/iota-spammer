@@ -34,6 +34,7 @@ var tag = flag.String("tag", "SPAMMER", "tag of txs")
 var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
 var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
 var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
+var zmqNoTipSel = flag.Bool("zmq-no-tip-sel", false, "whether to not perform normal spam with tip-selection until the zmq buffer is full")
 
 var targetAddr trinary.Hash
 var emptySeed = strings.Repeat("9", 81)
@@ -50,7 +51,9 @@ func main() {
 		for i := 0; i < *instancesNum; i++ {
 			go zmqSpammer()
 		}
-		accSpammer(*zmqBuf)
+		if !*zmqNoTipSel {
+			accSpammer(*zmqBuf)
+		}
 	} else {
 		for i := 0; i < *instancesNum; i++ {
 			accSpammer(-1)
@@ -121,7 +124,7 @@ func zmqSpammer() {
 	var rMu sync.Mutex
 	r := ring.New(*zmqBuf)
 
-	
+
 	go func() {
 		for {
 			msg, err := socket.Recv(0)
