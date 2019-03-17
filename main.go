@@ -35,6 +35,7 @@ var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
 var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
 var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
 var zmqNoTipSel = flag.Bool("zmq-no-tip-sel", false, "whether to not perform normal spam with tip-selection until the zmq buffer is full")
+var bcBatchSize = flag.Int("bc-batch-size", 100, "how many txs to batch before submitting them to the node")
 
 var targetAddr trinary.Hash
 var emptySeed = strings.Repeat("9", 81)
@@ -124,7 +125,6 @@ func zmqSpammer() {
 	var rMu sync.Mutex
 	r := ring.New(*zmqBuf)
 
-
 	go func() {
 		for {
 			msg, err := socket.Recv(0)
@@ -170,26 +170,31 @@ func zmqSpammer() {
 	must(err)
 
 	for {
-		rMu.Lock()
-		trunk := r.Prev().Value.(string)
-		branch := r.Next().Value.(string)
-		rMu.Unlock()
+		toBroadcast := []trinary.Trytes{}
+		for i := 0; i < *bcBatchSize; i++ {
+			rMu.Lock()
+			trunk := r.Prev().Value.(string)
+			branch := r.Next().Value.(string)
+			rMu.Unlock()
 
-		//fmt.Println(trunk)
-		//fmt.Println(branch)
-		powedBndl, err := iotaAPI.AttachToTangle(trunk, branch, uint64(*mwm), bndl)
-		must(err)
+			//fmt.Println(trunk)
+			//fmt.Println(branch)
+			powedBndl, err := iotaAPI.AttachToTangle(trunk, branch, uint64(*mwm), bndl)
+			must(err)
 
-		tx, err := transaction.AsTransactionObject(powedBndl[0])
-		must(err)
-		hash := transaction.TransactionHash(tx)
-		rMu.Lock()
-		r.Value = hash
-		r = r.Next()
-		rMu.Unlock()
+			tx, err := transaction.AsTransactionObject(powedBndl[0])
+			must(err)
+			hash := transaction.TransactionHash(tx)
+			rMu.Lock()
+			r.Value = hash
+			r = r.Next()
+			rMu.Unlock()
+			toBroadcast = append(toBroadcast, powedBndl[0])
+		}
 
-		_, err = iotaAPI.BroadcastTransactions(powedBndl...)
+		_, err = iotaAPI.BroadcastTransactions(toBroadcast...)
 		must(err)
-		atomic.AddInt64(&spammed, 1)
+		atomic.AddInt64(&spammed, int64(*bcBatchSize))
+		toBroadcast = []trinary.Trytes{}
 	}
 }

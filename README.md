@@ -16,3 +16,4 @@ Flags:
 * -zmq-url, the url of the zmq stream, default: tcp://127.0.0.1:5556
 * -zmq-buf, the size of the zmq tx ring buffer; default: 50
 * -zmq-no-tip-sel, whether to not perform normal spam with tip-selection until the zmq buffer is full, default: false
+* -bc-batch-size, how many txs to batch before submitting them to the node, default: 100
