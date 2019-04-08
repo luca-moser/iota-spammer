@@ -177,8 +177,6 @@ func zmqSpammer() {
 			branch := r.Next().Value.(string)
 			rMu.Unlock()
 
-			//fmt.Println(trunk)
-			//fmt.Println(branch)
 			powedBndl, err := iotaAPI.AttachToTangle(trunk, branch, uint64(*mwm), bndl)
 			must(err)
 
