@@ -31,6 +31,7 @@ var node = flag.String("node", "http://127.0.0.1:14265", "node to use")
 var depth = flag.Int("depth", 1, "depth for gtta")
 var mwm = flag.Int("mwm", 1, "mwm for pow")
 var tag = flag.String("tag", "SPAMMER", "tag of txs")
+var addr = flag.String("addr", strings.Repeat("9", 81), "the target address of the spam")
 var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
 var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
 var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
@@ -43,9 +44,8 @@ var emptySeed = strings.Repeat("9", 81)
 func main() {
 	flag.Parse()
 
-	target := strings.Repeat("9", 81)
 	var err error
-	targetAddr, err = checksum.AddChecksum(target, true, consts.AddressChecksumTrytesSize)
+	targetAddr, err = checksum.AddChecksum(*addr, true, consts.AddressChecksumTrytesSize)
 	must(err)
 
 	if *zmq {
