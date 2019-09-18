@@ -44,6 +44,8 @@ var emptySeed = strings.Repeat("9", 81)
 func main() {
 	flag.Parse()
 
+	*addr = trinary.Pad(*addr, 81)
+
 	var err error
 	targetAddr, err = checksum.AddChecksum(*addr, true, consts.AddressChecksumTrytesSize)
 	must(err)
