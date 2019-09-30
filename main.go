@@ -4,8 +4,6 @@ import (
 	"container/ring"
 	"flag"
 	"fmt"
-	"github.com/iotaledger/iota.go/account"
-	"github.com/iotaledger/iota.go/account/builder"
 	"github.com/iotaledger/iota.go/api"
 	"github.com/iotaledger/iota.go/bundle"
 	"github.com/iotaledger/iota.go/checksum"
@@ -92,13 +90,30 @@ func accSpammer(stopAfter int) {
 	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: *node, LocalProofOfWorkFunc: powFunc})
 	must(err)
 
-	acc, err := builder.NewBuilder().WithAPI(iotaAPI).WithMWM(uint64(*mwm)).WithDepth(uint64(*depth)).Build()
-	must(err)
-	must(acc.Start())
-
 	go func() {
 		for {
-			_, err := acc.Send(account.Recipient{Address: targetAddr, Tag: *tag});
+
+			spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
+
+			tips, err := iotaAPI.GetTransactionsToApprove(uint64(*depth))
+			if err != nil {
+				fmt.Printf("error sending: %s\n", err.Error())
+				continue
+			}
+
+			bndl, err := iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
+			if err != nil {
+				fmt.Printf("error preparing transfer: %s\n", err.Error())
+				continue
+			}
+
+			powedBndl, err := iotaAPI.AttachToTangle(tips.TrunkTransaction, tips.BranchTransaction, uint64(*mwm), bndl)
+			if err != nil {
+				fmt.Printf("error doing PoW: %s\n", err.Error())
+				continue
+			}
+
+			_, err = iotaAPI.BroadcastTransactions(powedBndl...)
 			if err != nil {
 				fmt.Printf("error sending: %s\n", err.Error())
 				continue
