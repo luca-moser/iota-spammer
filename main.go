@@ -2,13 +2,17 @@ package main
 
 import (
 	"container/ring"
+	"crypto/rand"
 	"flag"
 	"fmt"
+	"github.com/iotaledger/iota.go/address"
 	"github.com/iotaledger/iota.go/api"
 	"github.com/iotaledger/iota.go/bundle"
 	"github.com/iotaledger/iota.go/checksum"
 	"github.com/iotaledger/iota.go/consts"
+	. "github.com/iotaledger/iota.go/guards/validators"
 	"github.com/iotaledger/iota.go/pow"
+	"github.com/iotaledger/iota.go/signing"
 	"github.com/iotaledger/iota.go/transaction"
 	"github.com/iotaledger/iota.go/trinary"
 	"github.com/pebbe/zmq4"
@@ -31,6 +35,7 @@ var mwm = flag.Int("mwm", 1, "mwm for pow")
 var tag = flag.String("tag", "SPAMMER", "tag of txs")
 var addr = flag.String("addr", strings.Repeat("9", 81), "the target address of the spam")
 var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
+var valueBundles = flag.Bool("value", false, "spam value bundles")
 var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
 var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
 var zmqNoTipSel = flag.Bool("zmq-no-tip-sel", false, "whether to not perform normal spam with tip-selection until the zmq buffer is full")
@@ -84,6 +89,22 @@ func main() {
 	<-make(chan struct{})
 }
 
+const seedLength = 81
+
+var tryteAlphabetLength = byte(len(consts.TryteAlphabet))
+
+func GenerateSeed() (string, error) {
+	var by [seedLength]byte
+	if _, err := rand.Read(by[:]); err != nil {
+		return "", err
+	}
+	var seed string
+	for _, b := range by {
+		seed += string(consts.TryteAlphabet[b%tryteAlphabetLength])
+	}
+	return seed, nil
+}
+
 func accSpammer(stopAfter int) {
 	_, powFunc := pow.GetFastestProofOfWorkImpl()
 	_ = powFunc
@@ -101,10 +122,43 @@ func accSpammer(stopAfter int) {
 				continue
 			}
 
-			bndl, err := iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
-			if err != nil {
-				fmt.Printf("error preparing transfer: %s\n", err.Error())
-				continue
+			var bndl []trinary.Trytes
+			if *valueBundles {
+				seed, err := GenerateSeed()
+				if err != nil {
+					panic(err)
+				}
+				firstAddr, err := address.GenerateAddress(seed, 0, consts.SecurityLevelHigh, true)
+				if err != nil {
+					fmt.Printf("error creating first address: %s\n", err.Error())
+					continue
+				}
+				bndl, err = PrepareTransfers(iotaAPI, seed, []bundle.Transfer{
+					{
+						Address: firstAddr,
+						Tag: *tag,
+						Value: 1000000000000,
+					},
+				}, api.PrepareTransfersOptions{
+					Inputs: []api.Input{
+						{
+							Address: firstAddr,
+							KeyIndex: 0,
+							Security: consts.SecurityLevelHigh,
+							Balance: 1000000000000,
+						},
+					},
+				})
+				if err != nil {
+					fmt.Printf("error preparing transfer: %s\n", err.Error())
+					continue
+				}
+			}else{
+				bndl, err = iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
+				if err != nil {
+					fmt.Printf("error preparing transfer: %s\n", err.Error())
+					continue
+				}
 			}
 
 			powedBndl, err := iotaAPI.AttachToTangle(tips.TrunkTransaction, tips.BranchTransaction, uint64(*mwm), bndl)
@@ -212,4 +266,130 @@ func zmqSpammer() {
 		atomic.AddInt64(&spammed, int64(*bcBatchSize))
 		toBroadcast = []trinary.Trytes{}
 	}
+}
+
+func getPrepareTransfersDefaultOptions(options api.PrepareTransfersOptions) api.PrepareTransfersOptions {
+	if options.Security == 0 {
+		options.Security = consts.SecurityLevelMedium
+	}
+	if options.Inputs == nil {
+		options.Inputs = []api.Input{}
+	}
+	return options
+}
+
+func PrepareTransfers(apii *api.API, seed trinary.Trytes, transfers bundle.Transfers, opts api.PrepareTransfersOptions) ([]trinary.Trytes, error) {
+	opts = getPrepareTransfersDefaultOptions(opts)
+
+	if err := Validate(ValidateSeed(seed), ValidateSecurityLevel(opts.Security)); err != nil {
+		return nil, err
+	}
+
+	for i := range transfers {
+		if err := Validate(ValidateAddresses(transfers[i].Value != 0, transfers[i].Address)); err != nil {
+			return nil, err
+		}
+	}
+
+	var timestamp uint64
+	txs := transaction.Transactions{}
+
+	if opts.Timestamp != nil {
+		timestamp = *opts.Timestamp
+	} else {
+		timestamp = uint64(time.Now().UnixNano() / int64(time.Second))
+	}
+
+	var totalOutput uint64
+	for i := range transfers {
+		totalOutput += transfers[i].Value
+	}
+
+	// add transfers
+	outEntries, err := bundle.TransfersToBundleEntries(timestamp, transfers...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range outEntries {
+		txs = bundle.AddEntry(txs, outEntries[i])
+	}
+
+	// add input transactions
+	var totalInput uint64
+	for i := range opts.Inputs {
+		if err := Validate(ValidateAddresses(opts.Inputs[i].Balance != 0, opts.Inputs[i].Address)); err != nil {
+			return nil, err
+		}
+		totalInput += opts.Inputs[i].Balance
+		input := &opts.Inputs[i]
+		bndlEntry := bundle.BundleEntry{
+			Address:   input.Address[:consts.HashTrytesSize],
+			Value:     -int64(input.Balance),
+			Length:    uint64(input.Security),
+			Timestamp: timestamp,
+		}
+		txs = bundle.AddEntry(txs, bndlEntry)
+	}
+
+	// verify whether provided inputs fulfill threshold value
+	if totalInput < totalOutput {
+		return nil, consts.ErrInsufficientBalance
+	}
+
+	// finalize bundle by adding the bundle hash
+	finalizedBundle, err := bundle.Finalize(txs)
+	if err != nil {
+		return nil, err
+	}
+
+	// compute signatures for all input txs
+	normalizedBundleHash := signing.NormalizedBundleHash(finalizedBundle[0].Bundle)
+
+	signedFrags := []trinary.Trytes{}
+	for i := range opts.Inputs {
+		input := &opts.Inputs[i]
+		subseed, err := signing.Subseed(seed, input.KeyIndex)
+		if err != nil {
+			return nil, err
+		}
+		var sec consts.SecurityLevel
+		if input.Security == 0 {
+			sec = consts.SecurityLevelMedium
+		} else {
+			sec = input.Security
+		}
+
+		prvKey, err := signing.Key(subseed, sec)
+		if err != nil {
+			return nil, err
+		}
+
+		frags := make([]trinary.Trytes, input.Security)
+		for i := 0; i < int(input.Security); i++ {
+			signedFragTrits, err := signing.SignatureFragment(
+				normalizedBundleHash[i*consts.HashTrytesSize/3:(i+1)*consts.HashTrytesSize/3],
+				prvKey[i*consts.KeyFragmentLength:(i+1)*consts.KeyFragmentLength],
+			)
+			if err != nil {
+				return nil, err
+			}
+			frags[i] = trinary.MustTritsToTrytes(signedFragTrits)
+		}
+
+		signedFrags = append(signedFrags, frags...)
+	}
+
+	// add signed fragments to txs
+	var indexFirstInputTx int
+	for i := range txs {
+		if txs[i].Value < 0 {
+			indexFirstInputTx = i
+			break
+		}
+	}
+
+	txs = bundle.AddTrytes(txs, signedFrags, indexFirstInputTx)
+
+	// finally return built up txs as raw trytes
+	return transaction.MustFinalTransactionTrytes(txs), nil
 }
