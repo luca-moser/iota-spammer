@@ -111,54 +111,54 @@ func accSpammer(stopAfter int) {
 	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: *node, LocalProofOfWorkFunc: powFunc})
 	must(err)
 
+	spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
+
+	var bndl []trinary.Trytes
+	if *valueBundles {
+		seed, err := GenerateSeed()
+		if err != nil {
+			panic(err)
+		}
+		firstAddr, err := address.GenerateAddress(seed, 0, consts.SecurityLevelHigh, true)
+		if err != nil {
+			fmt.Printf("error creating first address: %s\n", err.Error())
+			panic(err)
+		}
+		bndl, err = PrepareTransfers(iotaAPI, seed, []bundle.Transfer{
+			{
+				Address: firstAddr,
+				Tag: *tag,
+				Value: 1000000000000,
+			},
+		}, api.PrepareTransfersOptions{
+			Inputs: []api.Input{
+				{
+					Address: firstAddr,
+					KeyIndex: 0,
+					Security: consts.SecurityLevelHigh,
+					Balance: 1000000000000,
+				},
+			},
+		})
+		if err != nil {
+			fmt.Printf("error preparing transfer: %s\n", err.Error())
+			panic(err)
+		}
+	}else{
+		bndl, err = iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
+		if err != nil {
+			fmt.Printf("error preparing transfer: %s\n", err.Error())
+			panic(err)
+		}
+	}
+
 	go func() {
 		for {
-
-			spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
 
 			tips, err := iotaAPI.GetTransactionsToApprove(uint64(*depth))
 			if err != nil {
 				fmt.Printf("error sending: %s\n", err.Error())
 				continue
-			}
-
-			var bndl []trinary.Trytes
-			if *valueBundles {
-				seed, err := GenerateSeed()
-				if err != nil {
-					panic(err)
-				}
-				firstAddr, err := address.GenerateAddress(seed, 0, consts.SecurityLevelHigh, true)
-				if err != nil {
-					fmt.Printf("error creating first address: %s\n", err.Error())
-					continue
-				}
-				bndl, err = PrepareTransfers(iotaAPI, seed, []bundle.Transfer{
-					{
-						Address: firstAddr,
-						Tag: *tag,
-						Value: 1000000000000,
-					},
-				}, api.PrepareTransfersOptions{
-					Inputs: []api.Input{
-						{
-							Address: firstAddr,
-							KeyIndex: 0,
-							Security: consts.SecurityLevelHigh,
-							Balance: 1000000000000,
-						},
-					},
-				})
-				if err != nil {
-					fmt.Printf("error preparing transfer: %s\n", err.Error())
-					continue
-				}
-			}else{
-				bndl, err = iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
-				if err != nil {
-					fmt.Printf("error preparing transfer: %s\n", err.Error())
-					continue
-				}
 			}
 
 			powedBndl, err := iotaAPI.AttachToTangle(tips.TrunkTransaction, tips.BranchTransaction, uint64(*mwm), bndl)
