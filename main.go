@@ -36,6 +36,8 @@ var tag = flag.String("tag", "SPAMMER", "tag of txs")
 var addr = flag.String("addr", strings.Repeat("9", 81), "the target address of the spam")
 var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
 var valueBundles = flag.Bool("value", false, "spam value bundles")
+var valueEntries = flag.Int("value-entries", 1, "value entries")
+var valueSecLvl = flag.Int("value-sec-lvl", 2, "value sec level")
 var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
 var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
 var zmqNoTipSel = flag.Bool("zmq-no-tip-sel", false, "whether to not perform normal spam with tip-selection until the zmq buffer is full")
@@ -119,32 +121,34 @@ func accSpammer(stopAfter int) {
 		if err != nil {
 			panic(err)
 		}
-		firstAddr, err := address.GenerateAddress(seed, 0, consts.SecurityLevelHigh, true)
-		if err != nil {
-			fmt.Printf("error creating first address: %s\n", err.Error())
-			panic(err)
+
+		trnsf := []bundle.Transfer{}
+		inputs := []api.Input{}
+		for i := 0; i < *valueEntries; i++ {
+			addr, err := address.GenerateAddress(seed, uint64(i), consts.SecurityLevel(*valueSecLvl), true)
+			if err != nil {
+				fmt.Printf("error creating address: %s\n", err.Error())
+				panic(err)
+			}
+			trnsf = append(trnsf, bundle.Transfer{
+				Address: addr,
+				Tag:     *tag,
+				Value:   100000000,
+			})
+			inputs = append(inputs, api.Input{
+				Address:  addr,
+				KeyIndex: uint64(i),
+				Security: consts.SecurityLevel(*valueSecLvl),
+				Balance:  100000000,
+			})
 		}
-		bndl, err = PrepareTransfers(iotaAPI, seed, []bundle.Transfer{
-			{
-				Address: firstAddr,
-				Tag: *tag,
-				Value: 1000000000000,
-			},
-		}, api.PrepareTransfersOptions{
-			Inputs: []api.Input{
-				{
-					Address: firstAddr,
-					KeyIndex: 0,
-					Security: consts.SecurityLevelHigh,
-					Balance: 1000000000000,
-				},
-			},
-		})
+
+		bndl, err = PrepareTransfers(iotaAPI, seed, trnsf, api.PrepareTransfersOptions{Inputs: inputs,})
 		if err != nil {
 			fmt.Printf("error preparing transfer: %s\n", err.Error())
 			panic(err)
 		}
-	}else{
+	} else {
 		bndl, err = iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
 		if err != nil {
 			fmt.Printf("error preparing transfer: %s\n", err.Error())
