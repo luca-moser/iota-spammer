@@ -30,6 +30,7 @@ func must(err error) {
 
 var instancesNum = flag.Int("instances", 5, "spammer instance counts")
 var node = flag.String("node", "http://127.0.0.1:14265", "node to use")
+var nodes = flag.String("nodes", "", "nodes to use")
 var depth = flag.Int("depth", 1, "depth for gtta")
 var mwm = flag.Int("mwm", 1, "mwm for pow")
 var tag = flag.String("tag", "SPAMMER", "tag of txs")
@@ -63,8 +64,17 @@ func main() {
 			accSpammer(*zmqBuf)
 		}
 	} else {
-		for i := 0; i < *instancesNum; i++ {
-			accSpammer(-1)
+		if len(*nodes) > 0 {
+			split := strings.Split(*nodes, ",")
+			for _, n := range split {
+				for i := 0; i < *instancesNum; i++ {
+					accSpammer(-1, n)
+				}
+			}
+		} else {
+			for i := 0; i < *instancesNum; i++ {
+				accSpammer(-1)
+			}
 		}
 	}
 	pad := strings.Repeat("", 10)
@@ -107,10 +117,17 @@ func GenerateSeed() (string, error) {
 	return seed, nil
 }
 
-func accSpammer(stopAfter int) {
+func accSpammer(stopAfter int, nodeToUse ...string) {
 	_, powFunc := pow.GetFastestProofOfWorkImpl()
 	_ = powFunc
-	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: *node, LocalProofOfWorkFunc: powFunc})
+	var n string
+	if len(nodeToUse) > 0 {
+		n = nodeToUse[0]
+	} else {
+		n = *node
+	}
+
+	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: n, LocalProofOfWorkFunc: powFunc})
 	must(err)
 
 	spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
