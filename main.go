@@ -1,25 +1,25 @@
 package main
 
 import (
-	"container/ring"
 	"crypto/rand"
 	"flag"
 	"fmt"
+	"strings"
+	"sync/atomic"
+	"time"
+
 	"github.com/iotaledger/iota.go/address"
 	"github.com/iotaledger/iota.go/api"
 	"github.com/iotaledger/iota.go/bundle"
 	"github.com/iotaledger/iota.go/checksum"
 	"github.com/iotaledger/iota.go/consts"
+	"github.com/iotaledger/iota.go/converter"
 	. "github.com/iotaledger/iota.go/guards/validators"
 	"github.com/iotaledger/iota.go/pow"
 	"github.com/iotaledger/iota.go/signing"
 	"github.com/iotaledger/iota.go/transaction"
 	"github.com/iotaledger/iota.go/trinary"
-	"github.com/pebbe/zmq4"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
+	powsrvio "gitlab.com/powsrv.io/go/client"
 )
 
 func must(err error) {
@@ -30,19 +30,16 @@ func must(err error) {
 
 var instancesNum = flag.Int("instances", 5, "spammer instance counts")
 var node = flag.String("node", "http://127.0.0.1:14265", "node to use")
+var powsrvioKey = flag.String("powsrvio-key", "", "the powsrv.io key to use")
 var nodes = flag.String("nodes", "", "nodes to use")
 var depth = flag.Int("depth", 1, "depth for gtta")
 var mwm = flag.Int("mwm", 1, "mwm for pow")
 var tag = flag.String("tag", "SPAMMER", "tag of txs")
 var addr = flag.String("addr", strings.Repeat("9", 81), "the target address of the spam")
-var zmq = flag.Bool("zmq", false, "use a zmq stream of txs as tips")
+var msg = flag.String("msg", "", "the msg to send")
 var valueBundles = flag.Bool("value", false, "spam value bundles")
 var valueEntries = flag.Int("value-entries", 1, "value entries")
 var valueSecLvl = flag.Int("value-sec-lvl", 2, "value sec level")
-var zmqURL = flag.String("zmq-url", "tcp://127.0.0.1:5556", "the url of the zmq stream")
-var zmqBuf = flag.Int("zmq-buf", 50, "the size of the zmq tx ring buffer")
-var zmqNoTipSel = flag.Bool("zmq-no-tip-sel", false, "whether to not perform normal spam with tip-selection until the zmq buffer is full")
-var bcBatchSize = flag.Int("bc-batch-size", 100, "how many txs to batch before submitting them to the node")
 
 var targetAddr trinary.Hash
 var emptySeed = strings.Repeat("9", 81)
@@ -56,27 +53,19 @@ func main() {
 	targetAddr, err = checksum.AddChecksum(*addr, true, consts.AddressChecksumTrytesSize)
 	must(err)
 
-	if *zmq {
-		for i := 0; i < *instancesNum; i++ {
-			go zmqSpammer()
-		}
-		if !*zmqNoTipSel {
-			accSpammer(*zmqBuf)
+	if len(*nodes) > 0 {
+		split := strings.Split(*nodes, ",")
+		for _, n := range split {
+			for i := 0; i < *instancesNum; i++ {
+				accSpammer(-1, n)
+			}
 		}
 	} else {
-		if len(*nodes) > 0 {
-			split := strings.Split(*nodes, ",")
-			for _, n := range split {
-				for i := 0; i < *instancesNum; i++ {
-					accSpammer(-1, n)
-				}
-			}
-		} else {
-			for i := 0; i < *instancesNum; i++ {
-				accSpammer(-1)
-			}
+		for i := 0; i < *instancesNum; i++ {
+			accSpammer(-1)
 		}
 	}
+
 	pad := strings.Repeat("", 10)
 	const pointsCount = 5
 	points := [pointsCount]int64{}
@@ -118,8 +107,29 @@ func GenerateSeed() (string, error) {
 }
 
 func accSpammer(stopAfter int, nodeToUse ...string) {
-	_, powFunc := pow.GetFastestProofOfWorkImpl()
-	_ = powFunc
+
+	var powF pow.ProofOfWorkFunc
+
+	if len(*powsrvioKey) > 0 {
+
+		//powsrv.io config
+		powClient := &powsrvio.PowClient{
+			APIKey:        *powsrvioKey,
+			ReadTimeOutMs: 5000,
+			Verbose:       false,
+		}
+
+		// init powsrv.io
+		err := powClient.Init()
+		must(err)
+
+		// use powsrv.io as pow func
+		powF = powClient.PowFunc
+	} else {
+		_, powF = pow.GetFastestProofOfWorkImpl()
+
+	}
+
 	var n string
 	if len(nodeToUse) > 0 {
 		n = nodeToUse[0]
@@ -127,10 +137,15 @@ func accSpammer(stopAfter int, nodeToUse ...string) {
 		n = *node
 	}
 
-	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: n, LocalProofOfWorkFunc: powFunc})
+	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: n, LocalProofOfWorkFunc: powF})
 	must(err)
 
 	spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
+	if len(*msg) > 0 {
+		msgTrytes, err := converter.ASCIIToTrytes(*msg)
+		must(err)
+		spamTransfer[0].Message = msgTrytes
+	}
 
 	var bndl []trinary.Trytes
 	if *valueBundles {
@@ -206,88 +221,6 @@ func accSpammer(stopAfter int, nodeToUse ...string) {
 }
 
 var spammed int64 = 0
-
-func zmqSpammer() {
-	socket, err := zmq4.NewSocket(zmq4.SUB)
-	must(err)
-	must(socket.SetSubscribe("tx"))
-	err = socket.Connect(*zmqURL)
-	must(err)
-
-	var rMu sync.Mutex
-	r := ring.New(*zmqBuf)
-
-	go func() {
-		for {
-			msg, err := socket.Recv(0)
-			must(err)
-			split := strings.Split(msg, " ")
-			if len(split) != 13 {
-				continue
-			}
-
-			rMu.Lock()
-			r.Value = split[1]
-			r = r.Next()
-			rMu.Unlock()
-		}
-	}()
-
-	// wait for ring buffer to be filled up
-	for {
-		ready := true
-		filled := 0
-		r.Do(func(v interface{}) {
-			if v == nil {
-				ready = false
-				return
-			}
-			filled++
-		})
-		if ready {
-			break
-		}
-		fmt.Printf("\rwaiting for ring buffer to be filled (%d/%d)", filled, *zmqBuf)
-		<-time.After(time.Duration(1) * time.Second)
-	}
-	fmt.Printf("\nbuffer filled...")
-
-	_, powFunc := pow.GetFastestProofOfWorkImpl()
-	_ = powFunc
-	iotaAPI, err := api.ComposeAPI(api.HTTPClientSettings{URI: *node, LocalProofOfWorkFunc: powFunc})
-	must(err)
-
-	spamTransfer := []bundle.Transfer{{Address: targetAddr, Tag: *tag}}
-	bndl, err := iotaAPI.PrepareTransfers(emptySeed, spamTransfer, api.PrepareTransfersOptions{})
-	must(err)
-
-	for {
-		toBroadcast := []trinary.Trytes{}
-		for i := 0; i < *bcBatchSize; i++ {
-			rMu.Lock()
-			trunk := r.Prev().Value.(string)
-			branch := r.Next().Value.(string)
-			rMu.Unlock()
-
-			powedBndl, err := iotaAPI.AttachToTangle(trunk, branch, uint64(*mwm), bndl)
-			must(err)
-
-			tx, err := transaction.AsTransactionObject(powedBndl[0])
-			must(err)
-			hash := transaction.TransactionHash(tx)
-			rMu.Lock()
-			r.Value = hash
-			r = r.Next()
-			rMu.Unlock()
-			toBroadcast = append(toBroadcast, powedBndl[0])
-		}
-
-		_, err = iotaAPI.BroadcastTransactions(toBroadcast...)
-		must(err)
-		atomic.AddInt64(&spammed, int64(*bcBatchSize))
-		toBroadcast = []trinary.Trytes{}
-	}
-}
 
 func getPrepareTransfersDefaultOptions(options api.PrepareTransfersOptions) api.PrepareTransfersOptions {
 	if options.Security == 0 {
